@@ -3,7 +3,7 @@ name: Run Telegram Bot
 on:
   push:
     branches:
-      - main
+      - claude/telegram-ai-translator-U6wGL
   workflow_dispatch:
 
 jobs:
