@@ -1,0 +1,12 @@
+app = "translate-bot-tg"
+primary_region = "ams"
+
+[build]
+
+[processes]
+  bot = "python bot.py"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = 256
+  processes = ["bot"]
