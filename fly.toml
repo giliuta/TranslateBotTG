@@ -2,6 +2,7 @@ app = 'translatebottg'
 primary_region = 'ams'
 
 [build]
+  dockerfile = "Dockerfile"
 
 [processes]
   bot = 'python bot.py'

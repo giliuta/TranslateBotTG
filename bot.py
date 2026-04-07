@@ -1,15 +1,15 @@
 import os
 import io
-import json
 import base64
 import logging
 import tempfile
+import subprocess
 
-import httpx
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import anthropic
+import speech_recognition as sr
 
 load_dotenv()
 
@@ -41,49 +41,6 @@ PHOTO_PROMPT = (
     "Reply with ONLY the translation — no explanations, no notes. "
     "If there is no text in the image, reply: 'No text found in the image.'"
 )
-
-GOOGLE_SPEECH_URL = "http://www.google.com/speech-api/v2/recognize"
-
-
-def speech_to_text(audio_data: bytes, language: str = "ru-RU") -> str | None:
-    """Transcribe OGG Opus audio using Google Speech Recognition."""
-    params = {
-        "client": "chromium",
-        "lang": language,
-        "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw",
-    }
-    headers = {"Content-Type": "audio/ogg; codecs=opus"}
-
-    try:
-        resp = httpx.post(
-            GOOGLE_SPEECH_URL,
-            params=params,
-            headers=headers,
-            content=audio_data,
-            timeout=15,
-        )
-        logger.info("Google Speech API response %d: %s", resp.status_code, resp.text[:500])
-
-        if resp.status_code != 200:
-            return None
-
-        for line in resp.text.strip().split("\n"):
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                results = data.get("result", [])
-                for r in results:
-                    alts = r.get("alternative", [])
-                    if alts:
-                        transcript = alts[0].get("transcript")
-                        if transcript:
-                            return transcript
-            except json.JSONDecodeError:
-                continue
-    except Exception as e:
-        logger.error("Google Speech API error: %s", e)
-    return None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -122,19 +79,36 @@ async def translate_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         voice_file = await context.bot.get_file(voice.file_id)
 
-        # Download voice as bytes (OGG Opus format)
-        audio_bytes = io.BytesIO()
-        await voice_file.download_to_memory(audio_bytes)
-        audio_data = audio_bytes.getvalue()
-        logger.info("Downloaded voice: %d bytes", len(audio_data))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ogg_path = os.path.join(tmpdir, "voice.ogg")
+            wav_path = os.path.join(tmpdir, "voice.wav")
 
-        # Send OGG Opus directly to Google Speech API (no conversion needed)
-        text = speech_to_text(audio_data, "ru-RU")
-        if not text:
-            text = speech_to_text(audio_data, "en-US")
-        if not text:
-            await update.message.reply_text("Не удалось распознать речь. Попробуйте говорить чётче.")
-            return
+            await voice_file.download_to_drive(ogg_path)
+            logger.info("Downloaded voice: %d bytes", os.path.getsize(ogg_path))
+
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", ogg_path, "-ar", "16000", "-ac", "1", "-f", "wav", wav_path],
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                logger.error("ffmpeg error: %s", result.stderr.decode())
+                await update.message.reply_text("Ошибка конвертации аудио.")
+                return
+
+            logger.info("Converted to WAV: %d bytes", os.path.getsize(wav_path))
+
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_path) as source:
+                audio = recognizer.record(source)
+
+            try:
+                text = recognizer.recognize_google(audio, language="ru-RU")
+            except sr.UnknownValueError:
+                try:
+                    text = recognizer.recognize_google(audio, language="en-US")
+                except sr.UnknownValueError:
+                    await update.message.reply_text("Не удалось распознать речь. Попробуйте говорить чётче.")
+                    return
 
         logger.info("Recognized: %s", text)
 
