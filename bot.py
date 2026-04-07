@@ -74,7 +74,9 @@ async def translate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def translate_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        voice = update.message.voice
+        voice = update.message.voice or update.message.audio
+        if not voice:
+            return
         voice_file = await context.bot.get_file(voice.file_id)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -83,17 +85,28 @@ async def translate_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             await voice_file.download_to_drive(ogg_path)
 
-            subprocess.run(
-                ["ffmpeg", "-i", ogg_path, "-ar", "16000", "-ac", "1", wav_path],
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", ogg_path, "-ar", "16000", "-ac", "1", "-f", "wav", wav_path],
                 capture_output=True,
-                check=True,
             )
+            if result.returncode != 0:
+                logger.error("ffmpeg error: %s", result.stderr.decode())
+                await update.message.reply_text("Ошибка конвертации аудио.")
+                return
 
             recognizer = sr.Recognizer()
             with sr.AudioFile(wav_path) as source:
                 audio = recognizer.record(source)
 
-            text = recognizer.recognize_google(audio, language="ru-RU")
+            # Try Russian first, then English
+            try:
+                text = recognizer.recognize_google(audio, language="ru-RU")
+            except sr.UnknownValueError:
+                try:
+                    text = recognizer.recognize_google(audio, language="en-US")
+                except sr.UnknownValueError:
+                    await update.message.reply_text("Не удалось распознать речь. Попробуйте ещё раз.")
+                    return
 
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -102,12 +115,10 @@ async def translate_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             messages=[{"role": "user", "content": text}],
         )
         translation = response.content[0].text
-        await update.message.reply_text(f"🎤 {text}\n\n🇬🇧 {translation}")
+        await update.message.reply_text(f"🎤 {text}\n\n📝 {translation}")
 
-    except sr.UnknownValueError:
-        await update.message.reply_text("Не удалось распознать речь. Попробуйте ещё раз.")
     except Exception as e:
-        logger.error("Voice translation error: %s", e)
+        logger.error("Voice translation error: %s", e, exc_info=True)
         await update.message.reply_text("Ошибка при обработке голосового. Попробуйте ещё раз.")
 
 
