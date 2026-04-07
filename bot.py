@@ -4,7 +4,6 @@ import json
 import base64
 import logging
 import tempfile
-import subprocess
 
 import httpx
 from dotenv import load_dotenv
@@ -46,18 +45,26 @@ PHOTO_PROMPT = (
 GOOGLE_SPEECH_URL = "http://www.google.com/speech-api/v2/recognize"
 
 
-def speech_to_text(wav_path: str, language: str = "ru-RU") -> str | None:
-    """Transcribe WAV audio using Google Speech Recognition via HTTP."""
-    with open(wav_path, "rb") as f:
-        audio_data = f.read()
-
-    params = {"client": "chromium", "lang": language, "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"}
-    headers = {"Content-Type": "audio/l16; rate=16000;"}
+def speech_to_text(audio_data: bytes, language: str = "ru-RU") -> str | None:
+    """Transcribe OGG Opus audio using Google Speech Recognition."""
+    params = {
+        "client": "chromium",
+        "lang": language,
+        "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw",
+    }
+    headers = {"Content-Type": "audio/ogg; codecs=opus"}
 
     try:
-        resp = httpx.post(GOOGLE_SPEECH_URL, params=params, headers=headers, content=audio_data, timeout=10)
+        resp = httpx.post(
+            GOOGLE_SPEECH_URL,
+            params=params,
+            headers=headers,
+            content=audio_data,
+            timeout=15,
+        )
+        logger.info("Google Speech API response %d: %s", resp.status_code, resp.text[:500])
+
         if resp.status_code != 200:
-            logger.error("Google Speech API HTTP %d: %s", resp.status_code, resp.text)
             return None
 
         for line in resp.text.strip().split("\n"):
@@ -69,7 +76,9 @@ def speech_to_text(wav_path: str, language: str = "ru-RU") -> str | None:
                 for r in results:
                     alts = r.get("alternative", [])
                     if alts:
-                        return alts[0].get("transcript")
+                        transcript = alts[0].get("transcript")
+                        if transcript:
+                            return transcript
             except json.JSONDecodeError:
                 continue
     except Exception as e:
@@ -113,33 +122,21 @@ async def translate_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         voice_file = await context.bot.get_file(voice.file_id)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ogg_path = os.path.join(tmpdir, "voice.ogg")
-            wav_path = os.path.join(tmpdir, "voice.wav")
+        # Download voice as bytes (OGG Opus format)
+        audio_bytes = io.BytesIO()
+        await voice_file.download_to_memory(audio_bytes)
+        audio_data = audio_bytes.getvalue()
+        logger.info("Downloaded voice: %d bytes", len(audio_data))
 
-            await voice_file.download_to_drive(ogg_path)
-            logger.info("Downloaded voice file: %s (%d bytes)", ogg_path, os.path.getsize(ogg_path))
+        # Send OGG Opus directly to Google Speech API (no conversion needed)
+        text = speech_to_text(audio_data, "ru-RU")
+        if not text:
+            text = speech_to_text(audio_data, "en-US")
+        if not text:
+            await update.message.reply_text("Не удалось распознать речь. Попробуйте говорить чётче.")
+            return
 
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-i", ogg_path, "-ar", "16000", "-ac", "1", "-f", "wav", wav_path],
-                capture_output=True,
-            )
-            if result.returncode != 0:
-                logger.error("ffmpeg error: %s", result.stderr.decode())
-                await update.message.reply_text("Ошибка конвертации аудио.")
-                return
-
-            logger.info("Converted to WAV: %s (%d bytes)", wav_path, os.path.getsize(wav_path))
-
-            # Try Russian first, then English
-            text = speech_to_text(wav_path, "ru-RU")
-            if not text:
-                text = speech_to_text(wav_path, "en-US")
-            if not text:
-                await update.message.reply_text("Не удалось распознать речь. Попробуйте говорить чётче.")
-                return
-
-        logger.info("Recognized text: %s", text)
+        logger.info("Recognized: %s", text)
 
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -151,7 +148,7 @@ async def translate_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(f"🎤 {text}\n\n📝 {translation}")
 
     except Exception as e:
-        logger.error("Voice translation error: %s", e, exc_info=True)
+        logger.error("Voice error: %s", e, exc_info=True)
         await update.message.reply_text(f"DEBUG: {type(e).__name__}: {e}")
 
 
