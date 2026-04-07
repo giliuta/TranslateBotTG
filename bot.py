@@ -152,7 +152,7 @@ async def translate_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     except Exception as e:
         logger.error("Voice translation error: %s", e, exc_info=True)
-        await update.message.reply_text("Ошибка при обработке голосового. Попробуйте ещё раз.")
+        await update.message.reply_text(f"DEBUG: {type(e).__name__}: {e}")
 
 
 async def translate_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
