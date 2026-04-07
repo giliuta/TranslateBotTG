@@ -3,8 +3,10 @@ import io
 import base64
 import logging
 import tempfile
-import subprocess
+import wave
+import struct
 
+import av
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -41,6 +43,39 @@ PHOTO_PROMPT = (
     "Reply with ONLY the translation — no explanations, no notes. "
     "If there is no text in the image, reply: 'No text found in the image.'"
 )
+
+
+def ogg_to_wav(ogg_path: str, wav_path: str) -> bool:
+    """Convert OGG Opus to WAV using PyAV (no system ffmpeg needed)."""
+    try:
+        container = av.open(ogg_path)
+        stream = container.streams.audio[0]
+
+        resampler = av.AudioResampler(
+            format="s16",
+            layout="mono",
+            rate=16000,
+        )
+
+        samples = []
+        for frame in container.decode(stream):
+            resampled = resampler.resample(frame)
+            for r in resampled:
+                arr = r.to_ndarray()
+                samples.extend(arr.flatten().tolist())
+
+        container.close()
+
+        with wave.open(wav_path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+
+        return True
+    except Exception as e:
+        logger.error("OGG to WAV error: %s", e, exc_info=True)
+        return False
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -86,12 +121,7 @@ async def translate_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await voice_file.download_to_drive(ogg_path)
             logger.info("Downloaded voice: %d bytes", os.path.getsize(ogg_path))
 
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-i", ogg_path, "-ar", "16000", "-ac", "1", "-f", "wav", wav_path],
-                capture_output=True,
-            )
-            if result.returncode != 0:
-                logger.error("ffmpeg error: %s", result.stderr.decode())
+            if not ogg_to_wav(ogg_path, wav_path):
                 await update.message.reply_text("Ошибка конвертации аудио.")
                 return
 
@@ -162,7 +192,7 @@ async def translate_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     except Exception as e:
         logger.error("Photo translation error: %s", e)
-        await update.message.reply_text("Ошибка при обработке фото. Попробуйте ещё раз.")
+        await update.message.reply_text(f"DEBUG photo: {type(e).__name__}: {e}")
 
 
 def main() -> None:
