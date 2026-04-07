@@ -25,16 +25,20 @@ logger = logging.getLogger(__name__)
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 SYSTEM_PROMPT = (
-    "You are a translator. The user sends you text in Russian. "
-    "Your only job is to translate it into natural, fluent English. "
-    "Reply with ONLY the English translation — no explanations, no notes, "
+    "You are a translator. Detect the language of the user's message. "
+    "If the text is in Russian — translate it into natural, fluent English. "
+    "If the text is in English — translate it into natural, fluent Russian. "
+    "If the text is in any other language — translate it into English. "
+    "Reply with ONLY the translation — no explanations, no notes, "
     "no extra text. Just the translation."
 )
 
 PHOTO_PROMPT = (
     "You are a translator. Look at this image and find any text in it. "
-    "Translate all the text you see into English. "
-    "Reply with ONLY the English translation — no explanations, no notes. "
+    "If the text is in Russian — translate it into English. "
+    "If the text is in English — translate it into Russian. "
+    "If the text is in any other language — translate it into English. "
+    "Reply with ONLY the translation — no explanations, no notes. "
     "If there is no text in the image, reply: 'No text found in the image.'"
 )
 
@@ -42,7 +46,8 @@ PHOTO_PROMPT = (
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Привет! Я переводчик с ИИ. Отправь мне:\n\n"
-        "📝 Текст на русском — переведу на английский\n"
+        "📝 Текст на русском → английский\n"
+        "📝 Текст на английском → русский\n"
         "🎤 Голосовое сообщение — распознаю и переведу\n"
         "📷 Фото с текстом — прочитаю и переведу"
     )
